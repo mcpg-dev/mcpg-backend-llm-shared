@@ -1,0 +1,60 @@
+[package]
+name = "mcpg-backend-llm-shared"
+version = "0.1.0-beta.13"
+license = "Apache-2.0"
+edition = "2024"
+description = """
+Provider-agnostic core for MCPG's per-provider LLM binding plugins
+(`mcpg-plugin-backend-llm-openai`, `…-anthropic`, `…-gemini`,
+`…-compat`, `…-voyage`, …).
+
+Owns:
+
+- Canonical request/response shapes (`NormalizedChatRequest`,
+  `NormalizedChatResponse`, `Message`, `MessageContent`,
+  `ContentPart`, `ToolCall`, `TokenUsage`, `FinishReason`).
+- Streaming primitives (`NormalizedStreamEvent`,
+  `StreamEventReceiver`, `BindingChunk` re-exports).
+- Provider-trait surface (`ChatProviderAdapter`,
+  `EmbeddingProviderAdapter` — the latter is not yet implemented).
+- The provider-agnostic chat engine (`ChatEngine`): prompt
+  rendering, agentic tool-calling loop, JSON Schema validation,
+  retry policy, streaming pump.
+- Shared config primitives (`SamplingSpec`, `ResponseFormatSpec`,
+  `ToolsSpec`, `RetrySpec`, `GuardrailsSpec`, `PromptSpec`,
+  `StreamingSpec`, `ApiKeyRef`).
+- Helper modules: MiniJinja templating, SSE event-boundary
+  parsing, secret resolution, error taxonomy.
+
+Provider-specific code (HTTP wire-format encoders/decoders, error-
+status mapping unique to the provider) lives in the per-provider
+plugin crates, not here.
+"""
+
+[dependencies]
+mcpg-backend-llm-types = { git = "https://github.com/mcpg-dev/mcpg-backend-llm-types", tag = "v0.1.0-beta.13", version = "=0.1.0-beta.13" }
+mcpg-plugin-protocol = { git = "https://github.com/mcpg-dev/mcpg-plugin-protocol", tag = "v0.1.0-beta.13", version = "=0.1.0-beta.13" }
+mcpg-sensitive = { git = "https://github.com/mcpg-dev/mcpg-sensitive", tag = "v0.1.0-beta.13", version = "=0.1.0-beta.13" }
+async-trait = "0.1"
+base64 = "0.22"
+blake3 = "1"
+bytes = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
+futures = "0.3"
+getrandom = "0.3"
+hex = "0.4"
+jsonschema = "0.28"
+lru = "0.16"
+metrics = "0.24"
+minijinja = { version = "2", default-features = false, features = ["builtins", "serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["sync", "rt", "time", "macros", "fs", "io-util"] }
+tokio-stream = "0.1"
+toml = "0.8"
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util"] }
