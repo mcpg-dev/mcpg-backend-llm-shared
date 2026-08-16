@@ -1,6 +1,6 @@
 [package]
 name = "mcpg-backend-llm-shared"
-version = "0.1.0-beta.13"
+version = "0.1.0-beta.14"
 license = "Apache-2.0"
 edition = "2024"
 description = """
@@ -32,9 +32,9 @@ plugin crates, not here.
 """
 
 [dependencies]
-mcpg-backend-llm-types = { git = "https://github.com/mcpg-dev/mcpg-backend-llm-types", tag = "v0.1.0-beta.13", version = "=0.1.0-beta.13" }
-mcpg-plugin-protocol = { git = "https://github.com/mcpg-dev/mcpg-plugin-protocol", tag = "v0.1.0-beta.13", version = "=0.1.0-beta.13" }
-mcpg-sensitive = { git = "https://github.com/mcpg-dev/mcpg-sensitive", tag = "v0.1.0-beta.13", version = "=0.1.0-beta.13" }
+mcpg-backend-llm-types = { git = "https://github.com/mcpg-dev/mcpg-backend-llm-types", tag = "v0.1.0-beta.14", version = "=0.1.0-beta.14" }
+mcpg-plugin-protocol = { git = "https://github.com/mcpg-dev/mcpg-plugin-protocol", tag = "v0.1.0-beta.14", version = "=0.1.0-beta.14" }
+mcpg-sensitive = { git = "https://github.com/mcpg-dev/mcpg-sensitive", tag = "v0.1.0-beta.14", version = "=0.1.0-beta.14" }
 async-trait = "0.1"
 base64 = "0.22"
 blake3 = "1"
