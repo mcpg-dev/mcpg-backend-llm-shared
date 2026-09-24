@@ -1,6 +1,6 @@
 [package]
 name = "mcpg-backend-llm-shared"
-version = "0.1.0-beta.29"
+version = "0.1.0-beta.35"
 license = "Apache-2.0"
 edition = "2024"
 description = """
@@ -32,19 +32,19 @@ plugin crates, not here.
 """
 
 [dependencies]
-mcpg-backend-llm-types = { git = "https://github.com/mcpg-dev/mcpg-backend-llm-types", tag = "v0.1.0-beta.28", version = "=0.1.0-beta.28" }
-mcpg-plugin-protocol = { git = "https://github.com/mcpg-dev/mcpg-plugin-protocol", tag = "v0.1.0-beta.29", version = "=0.1.0-beta.29" }
-mcpg-sensitive = { git = "https://github.com/mcpg-dev/mcpg-sensitive", tag = "v0.1.0-beta.28", version = "=0.1.0-beta.28" }
+mcpg-backend-llm-types = { git = "https://github.com/mcpg-dev/mcpg-backend-llm-types", tag = "v0.1.0-beta.34", version = "=0.1.0-beta.34" }
+mcpg-plugin-protocol = { git = "https://github.com/mcpg-dev/mcpg-plugin-protocol", tag = "v0.1.0-beta.35", version = "=0.1.0-beta.35" }
+mcpg-sensitive = { git = "https://github.com/mcpg-dev/mcpg-sensitive", tag = "v0.1.0-beta.34", version = "=0.1.0-beta.34" }
 async-trait = "0.1"
-base64 = "0.22"
+base64 = "0.23"
 blake3 = "1"
 bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
 futures = "0.3"
-getrandom = "0.3"
+getrandom = "0.4"
 hex = "0.4"
 jsonschema = "0.28"
-lru = "0.16"
+lru = "0.18"
 metrics = "0.24"
 minijinja = { version = "2", default-features = false, features = ["builtins", "serde"] }
 serde = { version = "1", features = ["derive"] }
@@ -52,7 +52,7 @@ serde_json = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["sync", "rt", "time", "macros", "fs", "io-util"] }
 tokio-stream = "0.1"
-toml = "0.8"
+toml = "1.1"
 tracing = "0.1"
 
 [dev-dependencies]
