@@ -82,8 +82,18 @@ impl EmbeddingEngine {
     ///
     /// `embeddings.len()` always matches the input array length —
     /// for scalar `input`, it's a 1-element outer array.
-    #[instrument(skip(self, args), fields(binding = %self.backend_name, provider = %self.adapter.label(), model = %self.spec.model))]
     pub async fn execute(&self, args: &Value) -> Result<Value, BackendError> {
+        self.execute_with_usage(args).await.map(|(value, _)| value)
+    }
+
+    /// [`Self::execute`], with the input tokens and cost of the call for
+    /// the gateway's budgets: `None` for a response-cache hit, which costs
+    /// nothing, and for a provider that reports no usage.
+    #[instrument(skip(self, args), fields(binding = %self.backend_name, provider = %self.adapter.label(), model = %self.spec.model))]
+    pub async fn execute_with_usage(
+        &self,
+        args: &Value,
+    ) -> Result<(Value, Option<mcpg_plugin_protocol::BackendUsage>), BackendError> {
         let inputs = parse_inputs(args).map_err(|message| BackendError::InvalidSpec { message })?;
         if inputs.is_empty() {
             return Err(BackendError::InvalidSpec {
@@ -111,7 +121,7 @@ impl EmbeddingEngine {
                         serde_json::from_slice(&bytes).map_err(|e| BackendError::Transport {
                             message: format!("decode cached embedding response: {e}"),
                         })?;
-                    return Ok(value);
+                    return Ok((value, None));
                 }
                 Ok(None) => {
                     metrics::counter!(
@@ -220,14 +230,22 @@ impl EmbeddingEngine {
         // returns None for models not in the rate card; we
         // quietly drop the metric rather than emit a misleading
         // zero.
-        if usage_seen
-            && let Some(cost) = crate::cost::compute_embedding_cost_usd(
-                crate::cost::bundled_rate_card(),
-                self.adapter.label(),
-                &self.spec.model,
-                usage_total,
-            )
-        {
+        let cost_usd = usage_seen
+            .then(|| {
+                crate::cost::compute_embedding_cost_usd(
+                    crate::cost::bundled_rate_card(),
+                    self.adapter.label(),
+                    &self.spec.model,
+                    usage_total,
+                )
+            })
+            .flatten();
+        let usage = usage_seen.then_some(mcpg_plugin_protocol::BackendUsage {
+            input_tokens: u64::from(usage_total),
+            output_tokens: 0,
+            cost_usd,
+        });
+        if let Some(cost) = cost_usd {
             metrics::counter!(
                 "mcpg_embedding_cost_usd_total",
                 "binding" => self.backend_name.clone(),
@@ -251,7 +269,7 @@ impl EmbeddingEngine {
                 Ok(b) => b,
                 Err(e) => {
                     debug!(?e, "skip cache write: response not serializable");
-                    return Ok(out);
+                    return Ok((out, usage));
                 }
             };
             let ttl = Duration::from_secs(self.spec.cache.ttl_seconds);
@@ -264,7 +282,7 @@ impl EmbeddingEngine {
             }
         }
 
-        Ok(out)
+        Ok((out, usage))
     }
 }
 

@@ -64,18 +64,55 @@ pub struct ChatEngine {
     pub child_tool_validators: Vec<(String, Arc<Validator>)>,
 }
 
+/// The response of a call: its result, carried with the call's usage when
+/// the engine has one and the host that sent `headers` takes it, for the
+/// gateway's budgets.
+pub fn response_with_usage(
+    value: Value,
+    usage: Option<mcpg_plugin_protocol::BackendUsage>,
+    headers: &[(String, String)],
+) -> Result<BackendResponse, BackendError> {
+    let value = match usage {
+        Some(usage) if mcpg_plugin_protocol::BackendUsage::accepted_by(headers) => {
+            usage.wrap(value)
+        }
+        _ => value,
+    };
+    let payload = serde_json::to_vec(&value).map_err(|e| BackendError::Transport {
+        message: format!("serialize response: {e}"),
+    })?;
+    Ok(BackendResponse {
+        payload,
+        truncated: false,
+    })
+}
+
 impl ChatEngine {
     /// Run one tool call.
     ///
     /// `args` are the arguments the gateway forwarded; `request_id`
     /// and `session_id` are the parent call's identifiers.
-    #[instrument(skip(self, args), fields(binding = %self.backend_name, provider = %self.adapter.label(), model = %self.spec.model))]
     pub async fn execute(
         &self,
         args: &Value,
         request_id: &str,
         session_id: Option<&str>,
     ) -> Result<Value, BackendError> {
+        self.execute_with_usage(args, request_id, session_id)
+            .await
+            .map(|(value, _)| value)
+    }
+
+    /// [`Self::execute`], with the tokens and cost of the call for the
+    /// gateway's budgets: summed over every iteration of the tool loop, and
+    /// `None` for a response-cache hit, which costs nothing.
+    #[instrument(skip(self, args), fields(binding = %self.backend_name, provider = %self.adapter.label(), model = %self.spec.model))]
+    pub async fn execute_with_usage(
+        &self,
+        args: &Value,
+        request_id: &str,
+        session_id: Option<&str>,
+    ) -> Result<(Value, Option<mcpg_plugin_protocol::BackendUsage>), BackendError> {
         let now = chrono::Utc::now().to_rfc3339();
         let ctx = TemplateContext {
             input: args,
@@ -148,7 +185,7 @@ impl ChatEngine {
                         serde_json::from_slice(&bytes).map_err(|e| BackendError::Transport {
                             message: format!("decode cached chat response: {e}"),
                         })?;
-                    return Ok(value);
+                    return Ok((value, None));
                 }
                 Ok(None) => {
                     metrics::counter!(
@@ -354,12 +391,13 @@ impl ChatEngine {
             output_tokens: total_output_tokens.min(u32::MAX as u64) as u32,
             cached_input_tokens: total_cached_input_tokens.min(u32::MAX as u64) as u32,
         };
-        if let Some(cost) = crate::cost::compute_chat_cost_usd(
+        let cost_usd = crate::cost::compute_chat_cost_usd(
             crate::cost::bundled_rate_card(),
             self.adapter.label(),
             &self.spec.model,
             &aggregate_usage,
-        ) {
+        );
+        if let Some(cost) = cost_usd {
             metrics::counter!(
                 "mcpg_llm_cost_usd_total",
                 "binding" => self.backend_name.clone(),
@@ -403,7 +441,14 @@ impl ChatEngine {
             }
         }
 
-        Ok(validated)
+        Ok((
+            validated,
+            Some(mcpg_plugin_protocol::BackendUsage {
+                input_tokens: total_input_tokens,
+                output_tokens: total_output_tokens,
+                cost_usd,
+            }),
+        ))
     }
 
     /// Dispatch one child tool call back through the gateway.
@@ -720,10 +765,34 @@ impl ChatEngine {
         request_id: String,
         session_id: Option<String>,
     ) -> BackendChunkStream {
+        self.stream(args, request_id, session_id, false)
+    }
+
+    /// [`Self::execute_streaming`], whose `Done` chunk carries the call's
+    /// usage with the result ([`mcpg_plugin_protocol::BackendUsage`]), for a
+    /// host that takes it.
+    pub fn execute_streaming_with_usage(
+        self: std::sync::Arc<Self>,
+        args: Value,
+        request_id: String,
+        session_id: Option<String>,
+    ) -> BackendChunkStream {
+        self.stream(args, request_id, session_id, true)
+    }
+
+    fn stream(
+        self: std::sync::Arc<Self>,
+        args: Value,
+        request_id: String,
+        session_id: Option<String>,
+        report_usage: bool,
+    ) -> BackendChunkStream {
         let (tx, rx) = mpsc::channel::<Result<BackendChunk, BackendError>>(64);
         let engine = self.clone();
         tokio::spawn(async move {
-            engine.run_streaming(args, request_id, session_id, tx).await;
+            engine
+                .run_streaming(args, request_id, session_id, report_usage, tx)
+                .await;
         });
         Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx))
     }
@@ -733,6 +802,7 @@ impl ChatEngine {
         args: Value,
         request_id: String,
         session_id: Option<String>,
+        report_usage: bool,
         tx: mpsc::Sender<Result<BackendChunk, BackendError>>,
     ) {
         let now = chrono::Utc::now().to_rfc3339();
@@ -799,6 +869,7 @@ impl ChatEngine {
         let mut last_tool_calls: Vec<ToolCall> = Vec::new();
         let mut total_input: u64 = 0;
         let mut total_output: u64 = 0;
+        let mut total_cached: u64 = 0;
 
         for iter in 0..max_iterations {
             if iter > 0
@@ -847,6 +918,7 @@ impl ChatEngine {
                     Ok(NormalizedStreamEvent::Finish { reason, usage }) => {
                         total_input += usage.input_tokens as u64;
                         total_output += usage.output_tokens as u64;
+                        total_cached += usage.cached_input_tokens as u64;
                         if usage.input_tokens > 0 || usage.output_tokens > 0 {
                             let _ = tx
                                 .send(Ok(BackendChunk::Usage {
@@ -962,6 +1034,25 @@ impl ChatEngine {
                 let _ = tx.send(Err(e)).await;
                 return;
             }
+        };
+        let usage = mcpg_plugin_protocol::BackendUsage {
+            input_tokens: total_input,
+            output_tokens: total_output,
+            cost_usd: crate::cost::compute_chat_cost_usd(
+                crate::cost::bundled_rate_card(),
+                self.adapter.label(),
+                &self.spec.model,
+                &crate::normalized::TokenUsage {
+                    input_tokens: total_input.min(u32::MAX as u64) as u32,
+                    output_tokens: total_output.min(u32::MAX as u64) as u32,
+                    cached_input_tokens: total_cached.min(u32::MAX as u64) as u32,
+                },
+            ),
+        };
+        let final_value = if report_usage {
+            usage.wrap(final_value)
+        } else {
+            final_value
         };
         let payload = match serde_json::to_vec(&final_value) {
             Ok(p) => p,
@@ -1773,5 +1864,128 @@ mod tests {
             m.content,
             crate::normalized::MessageContent::Text(_)
         ));
+    }
+
+    /// An adapter whose every completion used 1 000 input and 500 output
+    /// tokens.
+    struct FixedUsageAdapter;
+
+    #[async_trait::async_trait]
+    impl ChatProviderAdapter for FixedUsageAdapter {
+        fn label(&self) -> &'static str {
+            "openai"
+        }
+
+        async fn chat_completion(
+            &self,
+            _request: &NormalizedChatRequest,
+            _timeout: Duration,
+        ) -> Result<NormalizedChatResponse, ProviderError> {
+            Ok(NormalizedChatResponse {
+                content: "hello".into(),
+                tool_calls: Vec::new(),
+                finish_reason: FinishReason::Stop,
+                usage: crate::normalized::TokenUsage {
+                    input_tokens: 1_000,
+                    output_tokens: 500,
+                    cached_input_tokens: 0,
+                },
+            })
+        }
+    }
+
+    fn fixed_usage_engine() -> ChatEngine {
+        let spec: ChatExecutionSpec = serde_json::from_value(json!({
+            "model": "gpt-4o-mini",
+            "prompt": { "system": "be brief", "user": "hi" },
+            "response_format": { "mode": "text" },
+        }))
+        .expect("spec");
+        ChatEngine {
+            backend_name: "usage-test".into(),
+            adapter: Arc::new(FixedUsageAdapter),
+            templates: Templates::compile("be brief", "hi").expect("templates"),
+            validator: None,
+            raw_output_schema: None,
+            spec,
+            host: Arc::new(mcpg_plugin_protocol::NoOpBackendHost),
+            child_tool_defs: Vec::new(),
+            child_tool_validators: Vec::new(),
+        }
+    }
+
+    /// A call reports its tokens and its rate-card cost, and the response
+    /// carries them to the gateway with the result.
+    #[tokio::test]
+    async fn a_call_reports_its_tokens_and_cost() {
+        let (value, usage) = fixed_usage_engine()
+            .execute_with_usage(&json!({}), "req-1", None)
+            .await
+            .expect("call");
+        assert_eq!(value, json!({"text": "hello"}));
+        let usage = usage.expect("usage");
+        assert_eq!((usage.input_tokens, usage.output_tokens), (1_000, 500));
+        let cost = usage.cost_usd.expect("gpt-4o-mini is on the rate card");
+        assert!((cost - 0.000_45).abs() < 1e-12, "{cost}");
+
+        let accepting = [(
+            mcpg_plugin_protocol::ACCEPT_USAGE_HEADER.to_owned(),
+            "1".to_owned(),
+        )];
+        let response =
+            response_with_usage(value.clone(), Some(usage), &accepting).expect("response");
+        let (result, carried) = mcpg_plugin_protocol::BackendUsage::split(
+            serde_json::from_slice(&response.payload).expect("json"),
+        );
+        assert_eq!(result, value);
+        assert_eq!(carried, Some(usage));
+
+        // A host that predates the usage, and a call without usage, get the
+        // plain result.
+        for (usage, headers) in [(Some(usage), &[][..]), (None, &accepting[..])] {
+            let plain = response_with_usage(value.clone(), usage, headers).expect("response");
+            assert_eq!(
+                serde_json::from_slice::<Value>(&plain.payload).unwrap(),
+                value
+            );
+        }
+    }
+
+    async fn last_chunk(mut stream: BackendChunkStream) -> BackendResponse {
+        let mut done = None;
+        let mut seen = Vec::new();
+        while let Some(chunk) = futures::StreamExt::next(&mut stream).await {
+            match chunk {
+                Ok(BackendChunk::Done(response)) => done = Some(response),
+                other => seen.push(format!("{other:?}")),
+            }
+        }
+        done.unwrap_or_else(|| panic!("a Done chunk; saw {seen:?}"))
+    }
+
+    /// The streamed result carries the same usage in its last chunk, for a
+    /// host that takes it.
+    #[tokio::test]
+    async fn a_streamed_call_reports_its_usage_in_the_last_chunk() {
+        let engine = Arc::new(fixed_usage_engine());
+        let response = last_chunk(Arc::clone(&engine).execute_streaming_with_usage(
+            json!({}),
+            "req-2".into(),
+            None,
+        ))
+        .await;
+        let (result, usage) = mcpg_plugin_protocol::BackendUsage::split(
+            serde_json::from_slice(&response.payload).expect("json"),
+        );
+        assert_eq!(result, json!({"text": "hello"}));
+        let usage = usage.expect("usage");
+        assert_eq!((usage.input_tokens, usage.output_tokens), (1_000, 500));
+        assert!(usage.cost_usd.is_some());
+
+        let plain = last_chunk(engine.execute_streaming(json!({}), "req-3".into(), None)).await;
+        assert_eq!(
+            serde_json::from_slice::<Value>(&plain.payload).unwrap(),
+            json!({"text": "hello"})
+        );
     }
 }
