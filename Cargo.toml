@@ -1,13 +1,13 @@
 [package]
 name = "mcpg-backend-llm-shared"
-version = "0.1.0-beta.45"
+version = "0.1.0-beta.46"
 license = "Apache-2.0"
 edition = "2024"
 description = "Provider-agnostic core for MCPG's per-provider LLM binding plugins: the canonical chat request/response and streaming shapes, the provider adapter traits, the shared chat engine (prompt rendering, tool-calling loop, JSON Schema validation, retries) and the shared config primitives. Provider wire formats live in the per-provider plugin crates."
 
 [dependencies]
 mcpg-backend-llm-types = { git = "https://github.com/mcpg-dev/mcpg-backend-llm-types", tag = "v0.1.0-beta.42", version = "=0.1.0-beta.42" }
-mcpg-plugin-protocol = { git = "https://github.com/mcpg-dev/mcpg-plugin-protocol", tag = "v0.1.0-beta.45", version = "=0.1.0-beta.45" }
+mcpg-plugin-protocol = { git = "https://github.com/mcpg-dev/mcpg-plugin-protocol", tag = "v0.1.0-beta.46", version = "=0.1.0-beta.46" }
 mcpg-sensitive = { git = "https://github.com/mcpg-dev/mcpg-sensitive", tag = "v0.1.0-beta.42", version = "=0.1.0-beta.42" }
 async-trait = "0.1"
 base64 = "0.23"
